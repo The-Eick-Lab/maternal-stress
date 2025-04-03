@@ -2,7 +2,7 @@
 
 [DOI](https://doi.org/10.1016/j.freeradbiomed.2025.03.036)
 
-PMID:  
+PMID: 40139413
 
 ### Abstract
 
