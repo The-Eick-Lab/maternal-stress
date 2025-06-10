@@ -1,0 +1,1438 @@
+---
+title: "Sehgal et al 2024_WOC_Stress_Cytokine"
+author: "Neha Sehgal"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: yes
+    toc_float: yes
+    toc_collapsed: yes
+    toc_depth: 5
+    number_sections: yes
+    theme: journal
+    highlight: zenburn
+    df_print: kable
+editor_options: 
+  markdown: 
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load Libraries
+library('haven')
+library('table1')
+library('tidyverse')
+library('Hmisc')
+library('ggplot2')
+library('ggcorrplot')
+library('corrplot')
+library(dplyr)
+library("tibble")
+library(readxl)
+
+# NS specific libraries
+library(naniar)
+library(DataExplorer)
+library(viridis)
+library(stringr)
+library(patchwork)
+library(kableExtra)
+library(lme4)
+library(sjPlot)
+library(olsrr)
+library(ggfortify)
+```
+
+## 0 Introduction
+
+This is the final R code that was used to obtain all the main reuslts, tables and figures for the manuscript: Sehgal et al (2025) doi: https://doi.org/10.1016/j.reprotox.2025.108922
+
+## 1 Data Import
+
+The imported exposure (that is pscysocial stress) and covariate data has been recoded and cleaned as needed. The
+imported outcome data includes inflammatory biomarker data as measured in median fluorescence intensities (MFIs) and
+concentrations as obtained from the lab and is also, imputed with the LOD/sqrt(2) and natural log-transformed.
+
+```{r import, include=FALSE}
+# load("cytokine_stress_covars.Rda")
+# load("WOC_covar_and_stress_data_05022024.csv")
+```
+
+## 2 Sociodemographics
+
+**Table 1.** Summary of sociodemographic characteristics and psychosocial stressors among pregnant persons undergoing
+elective second trimester pregnancy terminations in San Francisco, California (2010-2016).
+
+```{r demographics_table1, echo=FALSE}
+## add Table 1 
+table1(~., data = cytokine_stress_covars[122:142])
+
+# add parity and gravida 
+test<-left_join(cytokine_stress_covars, WOC_covar_and_stress_data_05022024, by="ppt_id", copy=F)
+table1(~grav.x + parity.x, data = test)
+
+# add stressors
+table1(~job.strain + pss.4.cat + sle.cat + social.support.cat, data = cytokine_stress_covars)
+
+# add employment 
+job_employ<- cytokine_stress_covars %>%  select(ppt_id, job.strain, employed)
+
+cytokine_stress_covars <- cytokine_stress_covars %>%  mutate(job_employ_fact = case_when(job.strain == "1" & employed == "Employed" ~ 2, 
+                                                                                   # job.strain == "1" & employed == "Unemployed" ~ "Unemployed and Job Strain",
+                                                                                    job.strain == "0" & employed == "Employed" ~ 1, 
+                                                                                    job.strain == "0" & employed == "Unemployed" ~ 0,
+                                                                                    is.na(job.strain) == TRUE & employed == "Unemployed" ~ 0))
+table1(~job_employ, cytokine_stress_covars)
+
+```
+
+**Figure S2.** Relation between maternal psychosocial stress among pregnant persons undergoing elective second trimester
+pregnancy terminations in San Francisco, California (2010-2016).
+
+```{r stressors_summary}
+corr_data<- cytokine_stress_covars %>%  select(sle, pss.4, job.strain, social.support)
+GGally::ggpairs(corr_data) + theme_bw()
+```
+
+## 3 Inflammatory Biomarkers in maternal blood, cord blood and placenta
+
+**Figure 1.** Violin plots of the distribution of natural log transform inflammatory biomarker levels in maternal
+blood, cord blood, and placenta among pregnant persons undergoing elective second trimester pregnancy terminations in
+San Francisco, California (2010-2016).
+
+```{r cytokines_table2}
+## Voilin plots
+cytokines_long<- cytokine_stress_covars %>%  select(ppt_id, starts_with("ln"))
+cytokines_long <- cytokines_long %>%  mutate_at(.vars = 2:122, as.double)
+cytokines_long <- pivot_longer(cytokines_long, cols = 2:122)
+cytokines_long <- cytokines_long %>%  mutate(Matrix = case_when(str_detect(name, "_m") == TRUE ~ "Maternal blood",
+                                                                str_detect(name, "_c") == TRUE ~ "Cord blood",
+                                                                str_detect(name, "_p") == TRUE ~ "Placental tissue",
+                                                                str_detect(name, "_mMFI") == TRUE ~ "Maternal blood",
+                                                                str_detect(name, "_cMFI") == TRUE ~ "Cord blood",
+                                                                str_detect(name, "_pMFI") == TRUE ~ "Placental tissue",
+                                                                TRUE ~ "who are u"), 
+                                             measure_type = case_when(
+                                               str_detect(name, "_mMFI") == TRUE ~ "MFI",
+                                               str_detect(name, "_cMFI") == TRUE ~ "MFI",
+                                               str_detect(name, "_pMFI") == TRUE ~ "MFI",
+                                               TRUE ~ "Imputed"), 
+                                             names_clean = str_extract(name, ".*(?=\\_)"))
+
+
+ggplot(cytokines_long %>% filter(measure_type == "Imputed") ,
+       aes(x= factor(Matrix, level = c("Maternal blood", 
+                                       "Cord blood", 
+                                       "Placental tissue") ),
+           y = value, 
+           fill = Matrix, color= Matrix)) + 
+  geom_violin(trim = F, alpha = 0.5) +
+  # geom_boxplot(color = "white", alpha = 0.5) +
+  geom_jitter(alpha = 0.35, size = 1) + 
+  scale_fill_manual(values = c("#00A2B3" ,"#F3A546", "#CF3E53")) +
+  scale_color_manual(values = c("#00A2B3" ,"#F3A546", "#CF3E53")) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 8)) + 
+  labs(y = "Cytokine levels (pg/mL) ", x = "") + 
+  ggtitle("Distribution of ln() transformmed cytokine by matrix in WOC") + 
+  facet_wrap(~  factor(names_clean, 
+                       levels = c( "lnCCL2", "lnCCL3", "lnCCL4", "lnCCL17", "lnCCL22","lnIL-8", "lnCXCL9", "lnCXCL10", 
+                                  "lnIL-1Beta", "lnIL-2", "lnIL-7", "lnIL-12", "lnIFN-Alpha", "lnIFN-Gamma", "lnTNF-Alpha", "lnTNF RI", 
+                                  "lnIL-4", "lnIL-10", "lnIL-6", "lnIL-28A", "lnCRH" )), ncol = 4, scales = "free") + 
+  theme_bw() + 
+  theme(axis.title = element_text(size = 12, face = "bold"), 
+        legend.position = "none", 
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 12))
+```
+
+**Table S3.** Distributions of inflammatory biomarker levels in maternal blood, cord blood, and placenta during
+mid-gestation (pg/ml) stratified by maternal psychosocial stress among pregnant persons undergoing elective second
+trimester pregnancy terminations in San Francisco, California (2010-2016).
+
+```{r cytokines_stress}
+######### Table S3. 
+table2.quartiles <- function(x, name, data2, ...) {
+  mean <- exp(mean(x, na.rm = T))
+  sd <- exp(sd(x, na.rm = T))
+  out <- t(c(#"",
+             "Mean (SD)" = paste0(sprintf("%.2f", round(mean, 1)) ,  " (", 
+                                  sprintf("%.2f", round(sd, 1))  , ")")))
+  out
+}
+
+# sle.cat
+table1(~.| sle.cat, data = cytokine_stress_covars[c(2:61, 137)] %>% drop_na(sle.cat), 
+       render.continuous=table2.quartiles, overall = F)
+
+# pss.4.cat 
+table1(~.| pss.4.cat, data = cytokine_stress_covars[c(2:61, 139)] %>% drop_na(pss.4.cat), 
+       render.continuous=table2.quartiles, overall = F)
+
+# job.strain 
+table1(~.| job.strain, data = cytokine_stress_covars[c(2:61, 140)] %>% drop_na(job.strain), 
+       render.continuous=table2.quartiles, overall = F)
+
+# social.support.cat
+table1(~.| social.support.cat, data = cytokine_stress_covars[c(2:61, 142)] %>% drop_na(social.support.cat), 
+       render.continuous=table2.quartiles, overall = F)
+
+# add CRH
+# sle.cat
+table1(~lnCRH_m| sle.cat, data = cytokine_stress_covars %>% drop_na(sle.cat), 
+       render.continuous=table2.quartiles, overall = F)
+
+# pss.4.cat 
+table1(~lnCRH_m| pss.4.cat, data = cytokine_stress_covars%>% drop_na(pss.4.cat), 
+       render.continuous=table2.quartiles, overall = F)
+
+# job.strain 
+table1(~lnCRH_m| job.strain, data = cytokine_stress_covars %>% drop_na(job.strain), 
+       render.continuous=table2.quartiles, overall = F)
+
+# social.support.cat
+table1(~lnCRH_m| social.support.cat, data = cytokine_stress_covars %>% drop_na(social.support.cat), 
+       render.continuous=table2.quartiles, overall = F)
+```
+
+Note: biomarkers were said to be well-detected if \>70% samples had biomarkers level above the limit of detection. Only
+these were carried forward for regression analysis and beyond.
+
+```{r well_detected_biomakers}
+
+cytokines_lod_sme <- cytokines %>% select(contains("LOD")) %>%  mutate_all(as.character) %>%  mutate_all(~if_else(. == "0", "1", "0")) # recode so that 1 = detectables, 0 = non-detectables
+cytokines_lod_sme<- cytokines_lod_sme %>%  mutate_all(as.double) %>%  colSums(na.rm =T)
+cytokines_lod_sme <- as.data.frame(cytokines_lod_sme) 
+colnames(cytokines_lod_sme) <- "N_detects"
+cytokines_lod_sme<- cytokines_lod_sme %>% mutate("LOD_percentage" = case_when( str_detect(rownames(cytokines_lod_sme), ".m.") == T ~ `N_detects`/106, 
+                                                                               str_detect(rownames(cytokines_lod_sme), ".c.") == T ~ `N_detects`/104,
+                                                                               str_detect(rownames(cytokines_lod_sme), ".p.") == T ~ `N_detects`/106))
+
+cytokines_lod_sme <- cytokines_lod_sme %>%  filter(`LOD_percentage` > 0.7) 
+cytokines_lod_sme$cytokine_list <- str_remove(rownames(cytokines_lod_sme), "([.]LOD)")
+cytokines_lod_sme$cytokine_list <- str_replace_all(cytokines_lod_sme$cytokine_list, "[.]", "_")
+cytokines_lod_sme$cytokine_list <-  paste0("ln", cytokines_lod_sme$cytokine_list)
+#write.csv(cytokines_lod_sme, file = "cytokines_lod_sme.csv")
+# edit names to match the format in dataframe names  and then import 
+cytokines_lod_sme <- read_csv("cytokines_lod_sme.csv")
+cytokines_lod_sme <- cytokines_lod_sme %>%  filter(`LOD_percentage` > 0.7) 
+```
+
+**Figure 2 and Table S4** Correlation matrix between natural log transformed inflammatory biomarker levels (pg/mL)
+measured in maternal blood, cord blood and placenta stratified by psychosocial stress among pregnant persons undergoing
+elective second trimester pregnancy terminations in San Francisco, California (2010-2016).
+
+```{r biomarker_correlation}
+# by stressors
+     # job strain
+corr_job <- cytokine_stress_covars %>% filter(job.strain == 0)
+corr_job <- corr_job[, c(2:61, 144)]
+
+plot_correlation(corr_job, cor_args = list("use" = "pairwise.complete.obs"), title = "No job strain")
+
+corr_job <- cytokine_stress_covars %>% filter(job.strain == 1)
+corr_job <- corr_job[, c(2:61, 144)]
+
+plot_correlation(corr_job, cor_args = list("use" = "pairwise.complete.obs"), title = "No job strain")
+
+
+     # Stressful life events 
+corr_job <- cytokine_stress_covars %>% filter(sle.cat == 0)
+corr_job <- corr_job[, c(2:61, 144)]
+
+plot_correlation(corr_job, cor_args = list("use" = "pairwise.complete.obs"), title = "No")
+
+corr_job <- cytokine_stress_covars %>% filter(sle.cat == 1)
+corr_job <- corr_job[, c(2:61, 144)]
+
+plot_correlation(corr_job, cor_args = list("use" = "pairwise.complete.obs"), title = "Yes")
+
+
+      # Social support 
+corr_job <- cytokine_stress_covars %>% filter(social.support.cat == "0- low stress = high social supp (above the median of 12)")
+corr_job <- corr_job[, c(2:61, 144)]
+
+plot_correlation(corr_job, cor_args = list("use" = "pairwise.complete.obs"), title = "No")
+
+corr_job <- cytokine_stress_covars %>% filter(social.support.cat == "1- high stress = low social support (below the median of 12)")
+corr_job <- corr_job[, c(2:61, 144)]
+
+plot_correlation(corr_job, cor_args = list("use" = "pairwise.complete.obs"), title = "Yes")
+
+
+     # Percieved stress score - 4
+corr_job <- cytokine_stress_covars %>% filter(pss.4.cat == "0")
+corr_job <- corr_job[, c(2:61, 144)]
+
+plot_correlation(corr_job, cor_args = list("use" = "pairwise.complete.obs"), title = "No")
+
+corr_job <- cytokine_stress_covars %>% filter(pss.4.cat == "1")
+corr_job <- corr_job[, c(2:61, 144)]
+
+plot_correlation(corr_job, cor_args = list("use" = "pairwise.complete.obs"), title = "Yes")
+```
+
+## 4 Indivdiual effects of pscysocial stressors on inflammatory biomarkers
+
+The associations between individual stressors and natural log transformed inflammatory biomarker levels in each
+biomatrix were examined using unadjusted and adjusted linear regression models.
+
+Model summary: 
+- Main exposure: high vs low stress (ref group = low stress in all models) 
+- Main outcome: inflammatory biomarker level in a biomatrix (select only well-detected biomarkers)
+- Adjustments: Adjusted models controlled for
+maternal age (years), maternal smoking status, parity, maternal education, gestational age (weeks) at the time of the procedure, and maternal body mass index (kg/m2) at the time of the procedure 
+- Statistical significance level: p \< 0.05
+
+**Unadjusted models**
+**Table S4.** Unadjusted and adjusted linear associations between maternal psychosocial stressors and natural log transformed inflammatory biomarker levels (pg/mL) in maternal blood, cord blood, and placenta during mid-gestation among pregnant women undergoing elective second trimester pregnancy terminations in San Francisco, California (2010-2016).
+```{r individual_associations}
+
+cytokine_list <- c(names(cytokine_stress_covars[c(2:61)]), "lnCRH_m")
+# run individual 
+job.strain.list <- lapply(cytokine_list, function(x){lm(substitute(i ~ job.strain , 
+                                                                   list(i = as.name(x))), data = cytokine_stress_covars,  na.action=na.omit)})
+
+pss.4.list <- lapply(cytokine_list, function(x){lm(substitute(i ~ pss.4 , 
+                                                              list(i = as.name(x))), data = cytokine_stress_covars)})
+pss.4.cat.list <- lapply(cytokine_list, function(x){lm(substitute(i ~ pss.4.cat , 
+                                                                  list(i = as.name(x))), data = cytokine_stress_covars)})
+
+social.support.list <- lapply(cytokine_list, function(x){lm(substitute(i ~ social.support , 
+                                                                       list(i = as.name(x))), data = cytokine_stress_covars)})
+social.support.cat.list <- lapply(cytokine_list, function(x){lm(substitute(i ~ social.support.cat , 
+                                                                           list(i = as.name(x))), data = cytokine_stress_covars)})
+sle.list <- lapply(cytokine_list, function(x){lm(substitute(i ~ sle , 
+                                                            list(i = as.name(x))), data = cytokine_stress_covars)})
+sle.cat.list <- lapply(cytokine_list, function(x){lm(substitute(i ~ sle.cat, 
+                                                                list(i = as.name(x))), data = cytokine_stress_covars)})
+# merge all individual mlr
+unadj_list = c(job.strain.list, pss.4.list, pss.4.cat.list, 
+               social.support.list, social.support.cat.list, sle.list, sle.cat.list) 
+
+# extract coefficients/effect estimates and the formula. 
+beta_slr <- plyr::ldply(unadj_list, coef)
+formula <- lapply(unadj_list, formula)
+# extractign 95% ci
+lcl.ucl <- plyr::ldply(unadj_list, confint) 
+lcl.ucl$predictor<- rep(c("intercept","stress"))
+
+lcl.ucl <- lcl.ucl %>%  filter(predictor == "stress") # filter all 95% CI specific to stress
+lcl.ucl$predictor <- rep(c("Job Strain", 
+                           "PSS 4", "PSS 4 cat", 
+                           "Social Support", "Social Support cat", 
+                           "Stressful Life Events", "Stressful Life Events cat"), each = 60) # Update predictor column with specific stress name, check `formula` dataframe from above to check the order
+lcl.ucl$outcome <- rep(cytokine_list,  7) # add a outcome column with specific cytokine, check `formula` above to check the order
+lcl.ucl<- lcl.ucl %>%  mutate(outcome_Matrix = case_when(str_detect(outcome, "_m") == TRUE~ "Maternal Sera", 
+                                                         str_detect(outcome, "_c") == TRUE~"Cord Blood", 
+                                                         str_detect(outcome, "_p") == TRUE~ "Placenta"), 
+                              outcom_clean = str_remove(outcome, pattern = "\\_[^.]*$")) # add a outcome column with specific matrix in which outcome was evaluated, check `formula` above to check the order
+
+#Combine effect estimates and 95% CI
+slr.forest <- cbind.data.frame(beta_slr$job.strain1, lcl.ucl)
+colnames(slr.forest)<-c("Beta", "LCL", "UCL", "stress", "cytokine_outcome", "outcome_Matrix" , "outcome_clean")
+
+
+# SUpplement figure 
+write.csv(data.frame(slr.forest %>% filter(stress == "PSS 4 cat" & cytokine_outcome %in% identify_cytokines_lod_imputed)), file = "suppl_table_PSS.csv")
+write.csv(data.frame(slr.forest %>% filter(stress == "Stressful Life Events cat"& cytokine_outcome %in% identify_cytokines_lod_imputed)), file = "suppl_table_sle cat.csv")
+write.csv(data.frame(slr.forest %>% filter(stress == "Social Support cat"& cytokine_outcome %in% identify_cytokines_lod_imputed)), file = "suppl_table_SS cat.csv")
+
+```
+
+**Adjusted models**
+The following code produced: 
+
+**Figure 1.** Adjusted linear associations between maternal psychosocial
+stress and natural log transformed inflammation biomarker levels, measured in maternal blood, cord blood, and placenta
+among pregnant persons undergoing elective second trimester pregnancy terminations in San Francisco, California
+(2010-2016).
+
+**Table S4.** Unadjusted and adjusted linear associations between maternal psychosocial stressors and natural log transformed inflammatory biomarker levels (pg/mL) in maternal blood, cord blood, and placenta during mid-gestation among pregnant women undergoing elective second trimester pregnancy terminations in San Francisco, California (2010-2016).
+
+```{r mlr}
+##### MLR #####
+# Fully adjusted. Consider maternal age, smoking status, parity, maternal education, gestational age, and body mass index at time of procedure.  
+# run individual 
+job.strain.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure , 
+                                                                       list(i = as.name(x))), data = cytokine_stress_covars)})
+
+pss.4.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ pss.4 + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure, 
+                                                                  list(i = as.name(x))), data = cytokine_stress_covars)})
+pss.4.cat.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure, 
+                                                                      list(i = as.name(x))), data = cytokine_stress_covars)})
+
+social.support.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ social.support + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure, 
+                                                                           list(i = as.name(x))), data = cytokine_stress_covars)})
+social.support.cat.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ social.support.cat + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure, 
+                                                                               list(i = as.name(x))), data = cytokine_stress_covars)})
+sle.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ sle + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure, 
+                                                                list(i = as.name(x))), data = cytokine_stress_covars)})
+sle.cat.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ sle.cat+ mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure, 
+                                                                    list(i = as.name(x))), data = cytokine_stress_covars)})
+# merge all individual mlr
+adj_list = c(job.strain.list.mlr, 
+             pss.4.list.mlr, pss.4.cat.list.mlr, 
+             social.support.list.mlr, social.support.cat.list.mlr, 
+             sle.list.mlr, sle.cat.list.mlr) # should have 60 models: 6 PFAS metabolites, 10 outcomes - 5 bsids @ 2 time points 
+
+# extract coefficients/effect estimates and the formula. 
+beta_mlr <- plyr::ldply(adj_list, coef)
+formula <- lapply(adj_list, formula)
+# extractign 95% ci
+lcl.ucl <- plyr::ldply(adj_list, confint) 
+lcl.ucl$predictor<- rep(c("intercept","stress", "mat_age", "smoke", "parity", "mat_edu", "mat_edu","gest_age", "bmi"), 427 )
+
+lcl.ucl <- lcl.ucl %>%  filter(predictor == "stress") # filter all 95% CI specific to stress
+lcl.ucl$predictor <- rep(c("Job Strain", 
+                           "PSS 4", "PSS 4 cat", 
+                           "Social Support", "Social Support cat", 
+                           "Stressful Life Events", "Stressful Life Events cat"), each = 61) # Update predictor column with specific stress name, check `formula` dataframe from above to check the order
+lcl.ucl$outcome <- rep(cytokine_list,  7) # add a outcome column with specific cytokine, check `formula` above to check the order
+lcl.ucl<- lcl.ucl %>%  mutate(outcome_Matrix = case_when(str_detect(outcome, "_m") == TRUE~ "Maternal Sera", 
+                                                         str_detect(outcome, "_c") == TRUE~"Cord Blood", 
+                                                         str_detect(outcome, "_p") == TRUE~ "Placenta"), 
+                              outcom_clean = str_remove(outcome, pattern = "\\_[^.]*$")) # add a outcome column with specific matrix in which outcome was evaluated, check `formula` above to check the order
+
+#Combine effect estimates and 95% CI
+mlr.forest <- cbind.data.frame(beta_mlr$job.strain1, lcl.ucl)
+
+colnames(mlr.forest)<-c("Beta", "LCL", "UCL", "stress", "cytokine_outcome", "outcome_Matrix" , "outcome_clean")
+mlr.forest.edu <- mlr.forest
+
+#change class
+mlr.forest$Beta <- as.numeric(mlr.forest$Beta)
+mlr.forest$LCL <- as.numeric(mlr.forest$LCL)
+mlr.forest$UCL <- as.numeric(mlr.forest$UCL)
+
+#  Creating forest plots ( aka horizontal error bar plots) with `ggplot2`
+test <- mlr.forest %>% filter(cytokine_outcome %in% identify_cytokines_lod_imputed | cytokine_outcome == "lnCRH_m")
+test <- test %>%  mutate(stress = str_replace_all(stress, "cat", "(categorical)"))
+test <- test %>%  filter(stress == "Job Strain" | stress == "PSS 4 (categorical)" |
+                         stress== "Social Support (categorical)"| stress== "Stressful Life Events (categorical)")
+test <- test %>%  mutate(stress_neat_names = str_replace_all(stress, "(categorical)|[()]", ""))
+test$outcome_Matrix <- test$outcome_Matrix %>%  str_replace_all("Maternal Sera", "Maternal Blood")
+
+# add groups for cytokines 
+
+test <- all_imputed_models %>% filter(cytokine_outcome %in% identify_cytokines_lod_imputed | cytokine_outcome == "lnCRH_m", model_type == "MLR")
+test <- test %>%  mutate(stress = str_replace_all(stress, "cat", "(categorical)"))
+test <- test %>%  filter(stress == "Job Strain" | stress == "PSS 4 (categorical)" |
+                         stress== "Social Support (categorical)"| stress== "Stressful Life Events (categorical)")
+test <- test %>%  mutate(stress_neat_names = str_replace_all(stress, "(categorical)|[()]", ""))
+test$outcome_Matrix <- test$outcome_Matrix %>%  str_replace_all("Maternal Sera", "Maternal Blood")
+
+test<- test %>%  left_join(cytokine_group, by = c("cytokine_outcome"), copy = F)
+
+test <- test %>%  rowwise() %>%  mutate(outcome_clean= str_replace(outcome_clean, "ln", "ln("), 
+                                        outcome_clean = paste0(outcome_clean, ")"))
+# chemokines 
+mlr_chemo<- ggplot(test  %>%  filter(group_name == "Chemokines"),
+       aes(x = Beta, xmin = LCL, xmax = UCL,
+           y = stress_neat_names, 
+           color = factor(outcome_Matrix, level = c("Placenta", "Cord Blood", "Maternal Blood")))) +
+  geom_vline(xintercept = 0, linetype = "longdash", position=position_dodge(width = 0.5)) +
+  geom_errorbarh(height = 0.2, lwd=1.05, position=position_dodge(width = 0.5)) +
+  geom_point(size = 2, shape = "circle", stroke = 0.5, position=position_dodge(width = 0.5)) +
+  xlab("Effect Estimate (95% CI)") +
+  ylab(" ") + 
+  labs(color = "Matrix")+
+  scale_fill_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  scale_color_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  facet_grid( 
+               factor(outcome_clean, 
+                     levels = c( "ln(CCL2)", "ln(CCL3)", "ln(CCL4)", "ln(CCL17)", "ln(CCL22)", "ln(IL-8)","ln(CXCL9)", "ln(CXCL10)", 
+                                "ln(IL-1Beta)", "ln(IL-2)", "ln(IL-7)", "ln(IL-12)", "ln(IFN-Alpha)", "ln(IFN-Gamma)", "ln(TNF-Alpha)", "ln(TNF RI)", 
+                                "ln(IL-4)", "ln(IL-10)", "ln(IL-6)", "ln(IL-28A)", "ln(CRH)" ))  ~ group_name , 
+               
+              scales = "free_x") +
+ # ggtitle("Adjusted* effect of stress on cytokine measured in maternal sera, cord blood and placenta in WOC") + 
+  theme_bw() +theme(panel.border = element_blank(), legend.position="none", 
+                    strip.text =  element_text(size=12, face = "bold"), 
+                    axis.text.x = element_text(size=13), 
+                    legend.title = element_text(size = 14), 
+                    legend.text = element_text(size = 14), 
+                    axis.title.x = element_text(size=14, face="bold", colour = "black"), 
+                    axis.text.y = element_text(size=12,  colour = "black"),
+                    strip.text.y.right = element_text(face = "bold", size = 14),
+                    strip.placement = "outside"
+                    #strip.background.y =  element_blank()
+  )  
+
+
+  # proinflammatory 
+mlr_pi<-   ggplot(test  %>%  filter(group_name == "Pro-inflammatory cytokines"),
+         aes(x = Beta, xmin = LCL, xmax = UCL,
+             y = stress_neat_names, 
+             color = factor(outcome_Matrix, level = c("Placenta", "Cord Blood", "Maternal Blood")))) +
+  geom_vline(xintercept = 0, linetype = "longdash", position=position_dodge(width = 0.5)) +
+  geom_errorbarh(height = 0.2, lwd=1.05, position=position_dodge(width = 0.5)) +
+  geom_point(size = 2, shape = "circle", stroke = 0.5, position=position_dodge(width = 0.5)) +
+  xlab("Effect Estimate (95% CI)") +
+  ylab(" ") + 
+  labs(color = "Matrix")+
+  scale_fill_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  scale_color_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  facet_grid( 
+    factor(outcome_clean, 
+           levels = c( "ln(CCL2)", "ln(CCL3)", "ln(CCL4)", "ln(CCL17)", "ln(CCL22)", "ln(IL-8)","ln(CXCL9)", "ln(CXCL10)", 
+                       "ln(IL-1Beta)", "ln(IL-2)", "ln(IL-7)", "ln(IL-12)", "ln(IFN-Alpha)", "ln(IFN-Gamma)", "ln(TNF-Alpha)", "ln(TNF RI)", 
+                       "ln(IL-4)", "ln(IL-10)", "ln(IL-6)", "ln(IL-28A)", "ln(CRH)" ))  ~ group_name , 
+    
+    scales = "free_x") +
+  theme_bw() +theme(panel.border = element_blank(), legend.position="none", 
+                    strip.text =  element_text(size=12, face = "bold"), 
+                    axis.text.x = element_text(size=13), 
+                    legend.title = element_text(size = 14), 
+                    legend.text = element_text(size = 14), 
+                    axis.title.x = element_text(size=14, face="bold", colour = "black"), 
+                    axis.text.y = element_text(size=12,  colour = "black"),
+                    strip.text.y.right = element_text(face = "bold", size = 14),
+                    strip.placement = "outside"
+                    #strip.background.y =  element_blank()
+  )  
+
+
+  # anti-inflammatory 
+mlr_ai<-  ggplot(test  %>%  filter(group_name == "Anti-inflammatory cytokines"),
+         aes(x = Beta, xmin = LCL, xmax = UCL,
+             y = stress_neat_names, 
+             color = factor(outcome_Matrix, level = c("Placenta", "Cord Blood", "Maternal Blood")))) +
+  geom_vline(xintercept = 0, linetype = "longdash", position=position_dodge(width = 0.5)) +
+  geom_errorbarh(height = 0.2, lwd=1.05, position=position_dodge(width = 0.5)) +
+  geom_point(size = 2, shape = "circle", stroke = 0.5, position=position_dodge(width = 0.5)) +
+  xlab("Effect Estimate (95% CI)") +
+  ylab(" ") + 
+  labs(color = "Matrix")+
+  scale_fill_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  scale_color_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  facet_grid( 
+    factor(outcome_clean, 
+           levels = c( "ln(CCL2)", "ln(CCL3)", "ln(CCL4)", "ln(CCL17)", "ln(CCL22)", "ln(IL-8)","ln(CXCL9)", "ln(CXCL10)", 
+                       "ln(IL-1Beta)", "ln(IL-2)", "ln(IL-7)", "ln(IL-12)", "ln(IFN-Alpha)", "ln(IFN-Gamma)", "ln(TNF-Alpha)", "ln(TNF RI)", 
+                       "ln(IL-4)", "ln(IL-10)", "ln(IL-6)", "ln(IL-28A)", "ln(CRH)" )) ~ group_name , 
+    
+    scales = "free_x") +
+  theme_bw() +theme(panel.border = element_blank(), legend.position="none", 
+                    strip.text =  element_text(size=12, face = "bold"), 
+                    axis.text.x = element_text(size=13), 
+                    legend.title = element_text(size = 14), 
+                    legend.text = element_text(size = 14), 
+                    axis.title.x = element_text(size=14, face="bold", colour = "black"), 
+                    axis.text.y = element_text(size=12,  colour = "black"),
+                    strip.text.y.right = element_text(face = "bold", size = 14),
+                    strip.placement = "outside"
+                    #strip.background.y =  element_blank()
+  )  
+
+
+  # pro and anti-inflammatory 
+mlr_pai<-   ggplot(test  %>%  filter(group_name == "Pro- and anti-inflammatory cytokines"),
+         aes(x = Beta, xmin = LCL, xmax = UCL,
+             y = stress_neat_names, 
+             color = factor(outcome_Matrix, level = c("Placenta", "Cord Blood", "Maternal Blood")))) +
+  geom_vline(xintercept = 0, linetype = "longdash", position=position_dodge(width = 0.5)) +
+  geom_errorbarh(height = 0.2, lwd=1.05, position=position_dodge(width = 0.5)) +
+  geom_point(size = 2, shape = "circle", stroke = 0.5, position=position_dodge(width = 0.5)) +
+  xlab("Effect Estimate (95% CI)") +
+  ylab(" ") + 
+  labs(color = "Matrix")+
+  scale_fill_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  scale_color_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  facet_grid( 
+    factor(outcome_clean, 
+           levels = c( "ln(CCL2)", "ln(CCL3)", "ln(CCL4)", "ln(CCL17)", "ln(CCL22)", "ln(IL-8)","ln(CXCL9)", "ln(CXCL10)", 
+                       "ln(IL-1Beta)", "ln(IL-2)", "ln(IL-7)", "ln(IL-12)", "ln(IFN-Alpha)", "ln(IFN-Gamma)", "ln(TNF-Alpha)", "ln(TNF RI)", 
+                       "ln(IL-4)", "ln(IL-10)", "ln(IL-6)", "ln(IL-28A)", "ln(CRH)" ))  ~ group_name , 
+    
+    scales = "free_x") +
+  theme_bw() +theme(panel.border = element_blank(), legend.position="none", 
+                    strip.text =  element_text(size=12, face = "bold"), 
+                    axis.text.x = element_text(size=13), 
+                    legend.title = element_text(size = 14), 
+                    legend.text = element_text(size = 14), 
+                    axis.title.x = element_text(size=14, face="bold", colour = "black"), 
+                    axis.text.y = element_text(size=12,  colour = "black"),
+                    strip.text.y.right = element_text(face = "bold", size = 14),
+                    strip.placement = "outside"
+                    #strip.background.y =  element_blank()
+  )  
+
+# Immunomodulatory cytokine (antivirial)
+ mlr_i<-  ggplot(test  %>%  filter(group_name == "Immunomodulatory cytokine (antivirial)"),
+         aes(x = Beta, xmin = LCL, xmax = UCL,
+             y = stress_neat_names, 
+             color = factor(outcome_Matrix, level = c("Placenta", "Cord Blood", "Maternal Blood")))) +
+  geom_vline(xintercept = 0, linetype = "longdash", position=position_dodge(width = 0.5)) +
+  geom_errorbarh(height = 0.2, lwd=1.05, position=position_dodge(width = 0.5)) +
+  geom_point(size = 2, shape = "circle", stroke = 0.5, position=position_dodge(width = 0.5)) +
+  xlab("Effect Estimate (95% CI)") +
+  ylab(" ") + 
+  labs(color = "Matrix")+
+  scale_fill_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  scale_color_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  facet_grid( 
+    factor(outcome_clean, 
+           levels = c( "ln(CCL2)", "ln(CCL3)", "ln(CCL4)", "ln(CCL17)", "ln(CCL22)", "ln(IL-8)","ln(CXCL9)", "ln(CXCL10)", 
+                       "ln(IL-1Beta)", "ln(IL-2)", "ln(IL-7)", "ln(IL-12)", "ln(IFN-Alpha)", "ln(IFN-Gamma)", "ln(TNF-Alpha)", "ln(TNF RI)", 
+                       "ln(IL-4)", "ln(IL-10)", "ln(IL-6)", "ln(IL-28A)", "ln(CRH)" )) ~ group_name , 
+    
+    scales = "free_x") +
+   theme_bw() +theme(panel.border = element_blank(), legend.position="none", 
+                     strip.text =  element_text(size=11, face = "bold"), 
+                     axis.text.x = element_text(size=13), 
+                     legend.title = element_text(size = 14), 
+                     legend.text = element_text(size = 14), 
+                     axis.title.x = element_text(size=14, face="bold", colour = "black"), 
+                     axis.text.y = element_text(size=12,  colour = "black"),
+                     strip.text.y.right = element_text(face = "bold", size = 14),
+                     strip.placement = "outside"
+                     #strip.background.y =  element_blank()
+   )  
+ 
+ 
+  # hormone
+ mlr_h<-  ggplot(test  %>%  filter(group_name == "Hormone"),
+         aes(x = Beta, xmin = LCL, xmax = UCL,
+             y = stress_neat_names, 
+             color = factor(outcome_Matrix, level = c("Placenta", "Cord Blood", "Maternal Blood")))) +
+  geom_vline(xintercept = 0, linetype = "longdash", position=position_dodge(width = 0.5)) +
+  geom_errorbarh(height = 0.2, lwd=1.05, position=position_dodge(width = 0.5)) +
+  geom_point(size = 2, shape = "circle", stroke = 0.5, position=position_dodge(width = 0.5)) +
+  xlab("Effect Estimate (95% CI)") +
+  ylab(" ") + 
+  labs(color = "Matrix")+
+  scale_fill_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  scale_color_manual(values = c("#CF3E53", "#00A2B3" ,"#F3A546" )) +
+  facet_grid( 
+    factor(outcome_clean, 
+           levels = c( "ln(CCL2)", "ln(CCL3)", "ln(CCL4)", "ln(CCL17)", "ln(CCL22)", "ln(IL-8)","ln(CXCL9)", "ln(CXCL10)", 
+                       "ln(IL-1Beta)", "ln(IL-2)", "ln(IL-7)", "ln(IL-12)", "ln(IFN-Alpha)", "ln(IFN-Gamma)", "ln(TNF-Alpha)", "ln(TNF RI)", 
+                       "ln(IL-4)", "ln(IL-10)", "ln(IL-6)", "ln(IL-28A)", "ln(CRH)" )) ~ group_name , 
+    
+    scales = "free_x") +
+  theme_bw() +theme(panel.border = element_blank(), legend.position="none", 
+                    strip.text =  element_text(size=12, face = "bold"), 
+                    axis.text.x = element_text(size=13), 
+                    legend.title = element_text(size = 14), 
+                    legend.text = element_text(size = 14), 
+                    axis.title.x = element_text(size=14, face="bold", colour = "black"), 
+                    axis.text.y = element_text(size=12,  colour = "black"),
+                    strip.text.y.right = element_text(face = "bold", size = 14),
+                    strip.placement = "outside"
+                    #strip.background.y =  element_blank()
+  )  
+ 
+ # plot 
+mlr_chemo + mlr_pi + (mlr_ai /mlr_pai/mlr_i/mlr_h) + plot_layout(ncol = 3) 
+```
+
+## 5 Indivdiual effects of pscysocial stressors on cluster of inflammatory biomarkers
+The following code produced:
+**Figure S3.** Summary of principal component analyses of the natural log transformed inflammatory biomarker levels (pg/mL) in maternal blood, cord blood, and placenta during mid-gestation and their association with maternal psychosocial stressors, assessed using linear regression, among pregnant women undergoing elective second trimester pregnancy terminations in San Francisco, California (2010-2016).
+
+**Table S2.** Unadjusted and adjusted linear associations between principal components and psychosocial stressors among pregnant women undergoing elective second trimester pregnancy terminations in San Francisco, California (2010-2016).
+
+
+```{r pca}
+
+#### Well detected cytokines PCA ####
+# filter cytokines based on well identifid
+lod_well_sme <- cytokine_stress_covars %>%  select(ppt_id, all_of(identify_cytokines_lod_imputed), lnCRH_m)
+
+#### maternal cytokine only together ####
+pca_res <- prcomp(lod_well_sme%>% column_to_rownames(var= "ppt_id") %>%  select(ends_with("_m")), 
+                  scale. = TRUE) 
+
+# summarize pCA using a scree plot 
+var_explain <- data.frame(var_exp = (pca_res$sdev)^2) / sum((pca_res$sdev^2)) 
+var_explain <- rownames_to_column(var_explain) 
+var_explain$PC <- paste("PC", var_explain$rowname, sep=" ") 
+var_explain$PC <- factor(var_explain$PC,   levels = c("PC 1", "PC 2", "PC 3", "PC 4", "PC 5", "PC 6", "PC 7", "PC 8", "PC 9", "PC 10"))  
+
+ggplot(var_explain[1:10,], aes(x = as.factor(PC), y = var_exp, group = 1)) +  
+  geom_point(size = 4)+ geom_line() + 
+  theme_bw() +
+  labs(title = "Scree Plot: PCA on scaled data for \n all mateernal cytokines (imputed)", 
+       x = "PC",
+       y = "Percent of Variance Explained by PC") 
+
+# loading scores
+loading_scores <- pca_res$rotation[,1] # get loading score for PC1
+scores <- loading_scores %>%  abs() %>%  sort(decreasing = T)  # which IDs push the cytoines to the neg. side, and which IDs push the cytokines to the pos side, then order them 
+names(scores)[1:10] # get top 10 IDs with the largest loading score
+
+# by matrix
+loading_scores <- as.data.frame(pca_res[["rotation"]]) %>%  rownames_to_column(var="cytokine") %>%  mutate(Matrix = case_when(str_detect(cytokine, "_m") == TRUE ~ "Maternal blood",
+                                                                                                                              str_detect(cytokine, "_c") == TRUE ~ "Cord blood",
+                                                                                                                              str_detect(cytokine, "_p") == TRUE ~ "Placental tissue",
+                                                                                                                              TRUE ~ "who are u"), 
+                                                                                                           Cytokines_type = str_remove(cytokine, "ln|(_m)|(_c)|(_p)"), 
+                                                                                                           Cytokines_type = str_remove(Cytokines_type, "_m|_c|_p"), 
+                                                                                                           Cytokines_type2 = case_when(str_detect(cytokine, "CCL") == TRUE ~ "CCLs",
+                                                                                                                                       str_detect(cytokine, "IFN") == TRUE ~ "IFNs",
+                                                                                                                                       str_detect(cytokine, "IL") == TRUE ~ "ILs",
+                                                                                                                                       str_detect(cytokine, "TNF") == TRUE ~ "TNFs",
+                                                                                                                                       str_detect(cytokine, "CXCL") == TRUE ~ "CXCLs",
+                                                                                                                                       TRUE ~ "who are u"), 
+                                                                                                           cytokine_matrix = paste0(Matrix, Cytokines_type2))
+
+### heatmap 
+library(heatmaply)
+# show all cytokines, for all PC that explan 70% of variation 
+heatmap_pca<- as.matrix(loading_scores %>%  select(cytokine, PC1, PC2, PC3) %>% 
+                                                          mutate(cytokine = str_replace(cytokine, "Alpha", "a"), 
+                                                          cytokine = str_replace(cytokine, "Gamma", "y"), 
+                                                          cytokine = str_replace(cytokine, "Beta", "b")) %>%  column_to_rownames(var = "cytokine"))
+
+pheatmap::pheatmap(heatmap_pca, border_color = "white",
+                   cluster_cols = F, 
+                   fontsize = 10, 
+                   color=colorRampPalette(c("navy", "white", "red"))(50))
+
+
+### Models with PC1 
+# join PC loading factors with data 
+pc1_loadings <- as.data.frame(pca_res[["x"]]) %>% rownames_to_column(var = "ppt_id")
+pc1_loadings$ppt_id <- as.double(pc1_loadings$ppt_id)
+
+cytokine_stress_covars_pca <- left_join(cytokine_stress_covars, pc1_loadings, by = "ppt_id")
+
+########## Adjusted PCA plot 
+# NOTE: Repeat this code manually after each PCA u do; sorry
+m1<-  lm(`PC1` ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+                        data = cytokine_stress_covars_pca)
+m2<- lm(`PC2` ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+                        data = cytokine_stress_covars_pca)
+m3<- lm(`PC3` ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+              data = cytokine_stress_covars_pca)
+m4<-lm(`PC4` ~   job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+              data = cytokine_stress_covars_pca)
+m5<- lm(`PC5` ~   job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+               data = cytokine_stress_covars_pca)
+
+
+m6<-  lm(`PC1` ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m7<- lm(`PC2` ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m8<- lm(`PC3` ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m9<-lm(`PC4` ~   pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+       data = cytokine_stress_covars_pca)
+m10<- lm(`PC5` ~   pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+
+
+m11<-  lm(`PC1` ~ sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m12<- lm(`PC2` ~ sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m13<- lm(`PC3` ~ sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m14<-lm(`PC4` ~   sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+       data = cytokine_stress_covars_pca)
+m15<- lm(`PC5` ~   sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+
+
+m16<-  lm(`PC1` ~ social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+          data = cytokine_stress_covars_pca)
+m17<- lm(`PC2` ~ social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m18<- lm(`PC3` ~ social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m19<-lm(`PC4` ~   social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m20<- lm(`PC5` ~   social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+
+#paste0("m", 1:20, collapse = ",")
+
+tab_model(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18,m19,m20, 
+          collapse.ci = T, show.p=F )
+
+
+tab_model(m1,m2,m3, m4, 
+          m6,m7,m8, m9, 
+          m11,m12,m13, m14, 
+          m16,m17,m18, m19, 
+          collapse.ci = T, show.p=F )
+
+
+## forest plot 
+load("PCA_reg_all_biomarkers_0903024.xlsx") # load output from above models 
+
+#  Creating forest plots ( aka horizontal error bar plots) with `ggplot2`
+PCA_reg_all_biomarkers_0903024 <-PCA_reg_all_biomarkers_0903024 %>%  mutate(UCL = as.double(str_trim(UCL, side ="left")))
+pc_forest_plot<- ggplot(PCA_reg_all_biomarkers_0903024 %>%  filter(`pca  type` == "Placenta"),
+                        aes(x = as.double(beta), xmin = as.double(LCL), xmax = as.double(UCL),
+                            y = PC, color = MODEL)) +
+  geom_vline(xintercept = 0, linetype = "longdash", position=position_dodge(width = 0.5)) +
+  geom_errorbarh(height = 0.2, lwd=1.05, position=position_dodge(width = 0.5)) +
+  geom_point(size = 2, shape = "circle", stroke = 0.5, position=position_dodge(width = 0.5)) +
+  # xlim(c(-2, 2))+
+  # geom_text(aes(y=as.double(Beta), label=as.double(Beta)), 
+  #           position = position_dodge2(width=4), vjust = -10) +
+  #  Un-comment the above line to check the effect estimates. The colors and effect estimates should match up with the tab_model() estimates from above.
+  xlab("Effect Estimate (95% CI)") +
+  ylab(" ") + 
+  labs(color = "Matrix")+
+  ggthemes::scale_color_tableau() +
+  facet_wrap(~Predictors, scales = "free") + #strip.position="left", nrow=72, scales = "free_y")+
+  ggtitle("Adjusted effect of stress on PCs from PCA of all cytokines measured in maternal sera, cord blood and placenta in WOC") + 
+  theme_bw() +theme(panel.border = element_blank(), legend.position="top", 
+                    axis.title.x = element_text(size=11, face="bold", colour = "black"), 
+                    axis.text.x = element_text(size=11),
+                    axis.text.y = element_text(size=11, face="bold", colour = "black")) #  For bold axis, include the following in theme(): axis.title.x = element_text(size=9, face="bold", colour = "black"), axis.text.y = element_text(size=9, face="bold", colour = "black")
+
+
+pc_forest_plot
+
+
+
+########## unadjusted PCA plot
+m1<-  lm(`PC1` ~ job.strain , 
+         data = cytokine_stress_covars_pca)
+m2<- lm(`PC2` ~ job.strain , 
+        data = cytokine_stress_covars_pca)
+m3<- lm(`PC3` ~ job.strain , 
+        data = cytokine_stress_covars_pca)
+m4<-lm(`PC4` ~   job.strain , 
+       data = cytokine_stress_covars_pca)
+m5<- lm(`PC5` ~   job.strain , 
+        data = cytokine_stress_covars_pca)
+
+
+m6<-  lm(`PC1` ~ pss.4.cat , 
+         data = cytokine_stress_covars_pca)
+m7<- lm(`PC2` ~ pss.4.cat , 
+        data = cytokine_stress_covars_pca)
+m8<- lm(`PC3` ~ pss.4.cat , 
+        data = cytokine_stress_covars_pca)
+m9<-lm(`PC4` ~   pss.4.cat , 
+       data = cytokine_stress_covars_pca)
+m10<- lm(`PC5` ~   pss.4.cat , 
+         data = cytokine_stress_covars_pca)
+
+
+m11<-  lm(`PC1` ~ sle.cat , 
+          data = cytokine_stress_covars_pca)
+m12<- lm(`PC2` ~ sle.cat , 
+         data = cytokine_stress_covars_pca)
+m13<- lm(`PC3` ~ sle.cat , 
+         data = cytokine_stress_covars_pca)
+m14<-lm(`PC4` ~   sle.cat , 
+        data = cytokine_stress_covars_pca)
+m15<- lm(`PC5` ~   sle.cat , 
+         data = cytokine_stress_covars_pca)
+
+
+m16<-  lm(`PC1` ~ social.support.cat , 
+          data = cytokine_stress_covars_pca)
+m17<- lm(`PC2` ~ social.support.cat , 
+         data = cytokine_stress_covars_pca)
+m18<- lm(`PC3` ~ social.support.cat , 
+         data = cytokine_stress_covars_pca)
+m19<-lm(`PC4` ~   social.support.cat , 
+        data = cytokine_stress_covars_pca)
+m20<- lm(`PC5` ~   social.support.cat , 
+         data = cytokine_stress_covars_pca)
+
+#paste0("m", 1:20, collapse = ",")
+
+tab_model(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18,m19,m20, 
+          collapse.ci = T, show.p=F )
+
+
+tab_model(m1,m2,m3, m4, 
+          m6,m7,m8, m9, 
+          m11,m12,m13, m14, 
+          m16,m17,m18, m19, 
+          collapse.ci = T, show.p=F )
+
+
+
+
+#### cordblood cytokine only together ####
+pca_res <- prcomp(lod_well_sme%>% column_to_rownames(var= "ppt_id") %>%  select(ends_with("_c")) %>%  drop_na(), 
+                  scale. = TRUE) 
+
+# summarize pCA using a scree plot 
+var_explain <- data.frame(var_exp = (pca_res$sdev)^2) / sum((pca_res$sdev^2)) 
+var_explain <- rownames_to_column(var_explain) 
+var_explain$PC <- paste("PC", var_explain$rowname, sep=" ") 
+var_explain$PC <- factor(var_explain$PC,   levels = c("PC 1", "PC 2", "PC 3", "PC 4", "PC 5", "PC 6", "PC 7", "PC 8", "PC 9", "PC 10"))  
+
+ggplot(var_explain[1:10,], aes(x = as.factor(PC), y = var_exp, group = 1)) +  
+  geom_point(size = 4)+ geom_line() + 
+  theme_bw() +
+  labs(title = "Scree Plot: PCA on scaled data for \n cord cytokines (imputed)", 
+       x = "PC",
+       y = "Percent of Variance Explained by PC") 
+
+# loading scores
+loading_scores <- pca_res$rotation[,1] # get loading score for PC1
+scores <- loading_scores %>%  abs() %>%  sort(decreasing = T)  # which IDs push the cytoines to the neg. side, and which IDs push the cytokines to the pos side, then order them 
+names(scores)[1:10] # get top 10 IDs with the largest loading score
+
+# by matrix
+loading_scores <- as.data.frame(pca_res[["rotation"]]) %>%  rownames_to_column(var="cytokine") %>%  mutate(Matrix = case_when(str_detect(cytokine, "_m") == TRUE ~ "Maternal blood",
+                                                                                                                              str_detect(cytokine, "_c") == TRUE ~ "Cord blood",
+                                                                                                                              str_detect(cytokine, "_p") == TRUE ~ "Placental tissue",
+                                                                                                                              TRUE ~ "who are u"), 
+                                                                                                           Cytokines_type = str_remove(cytokine, "ln|(_m)|(_c)|(_p)"), 
+                                                                                                           Cytokines_type = str_remove(Cytokines_type, "_m|_c|_p"), 
+                                                                                                           Cytokines_type2 = case_when(str_detect(cytokine, "CCL") == TRUE ~ "CCLs",
+                                                                                                                                       str_detect(cytokine, "IFN") == TRUE ~ "IFNs",
+                                                                                                                                       str_detect(cytokine, "IL") == TRUE ~ "ILs",
+                                                                                                                                       str_detect(cytokine, "TNF") == TRUE ~ "TNFs",
+                                                                                                                                       str_detect(cytokine, "CXCL") == TRUE ~ "CXCLs",
+                                                                                                                                       TRUE ~ "who are u"), 
+                                                                                                           cytokine_matrix = paste0(Matrix, Cytokines_type2))
+
+
+### heatmap 
+library(heatmaply)
+# show all cytokines, for all PC that explan 70% of variation 
+heatmap_pca<- loading_scores %>%  select(cytokine, PC1, PC2, PC3) %>%  mutate(cytokine = str_replace(cytokine, "Alpha", "a"), 
+                                                          cytokine = str_replace(cytokine, "Gamma", "y"), 
+                                                          cytokine = str_replace(cytokine, "Beta", "b")) %>%  
+  column_to_rownames(var = "cytokine") %>%  as.matrix()
+
+pheatmap::pheatmap(heatmap_pca, border_color = "white",
+                   cluster_cols = F, 
+                   fontsize = 10, 
+                   color=colorRampPalette(c("navy", "white", "red"))(50))
+
+
+
+### Models with PC1 
+# join PC loading factors with data 
+pc1_loadings <- as.data.frame(pca_res[["x"]]) %>% rownames_to_column(var = "ppt_id")
+pc1_loadings$ppt_id <- as.double(pc1_loadings$ppt_id)
+
+cytokine_stress_covars_pca <- left_join(cytokine_stress_covars, pc1_loadings, by = "ppt_id")
+
+########## Adjusted PCA plot 
+# NOTE: Repeat this code manually after each PCA u do; sorry
+m1<-  lm(`PC1` ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+                        data = cytokine_stress_covars_pca)
+m2<- lm(`PC2` ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+                        data = cytokine_stress_covars_pca)
+m3<- lm(`PC3` ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+              data = cytokine_stress_covars_pca)
+m4<-lm(`PC4` ~   job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+              data = cytokine_stress_covars_pca)
+m5<- lm(`PC5` ~   job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+               data = cytokine_stress_covars_pca)
+
+
+m6<-  lm(`PC1` ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m7<- lm(`PC2` ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m8<- lm(`PC3` ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m9<-lm(`PC4` ~   pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+       data = cytokine_stress_covars_pca)
+m10<- lm(`PC5` ~   pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+
+
+m11<-  lm(`PC1` ~ sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m12<- lm(`PC2` ~ sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m13<- lm(`PC3` ~ sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m14<-lm(`PC4` ~   sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+       data = cytokine_stress_covars_pca)
+m15<- lm(`PC5` ~   sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+
+
+m16<-  lm(`PC1` ~ social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+          data = cytokine_stress_covars_pca)
+m17<- lm(`PC2` ~ social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m18<- lm(`PC3` ~ social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m19<-lm(`PC4` ~   social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m20<- lm(`PC5` ~   social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+
+#paste0("m", 1:20, collapse = ",")
+
+tab_model(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18,m19,m20, 
+          collapse.ci = T, show.p=F )
+
+
+tab_model(m1,m2,m3, m4, 
+          m6,m7,m8, m9, 
+          m11,m12,m13, m14, 
+          m16,m17,m18, m19, 
+          collapse.ci = T, show.p=F )
+
+
+## forest plot 
+load("PCA_reg_all_biomarkers_0903024.xlsx") # load output from above models 
+
+#  Creating forest plots ( aka horizontal error bar plots) with `ggplot2`
+PCA_reg_all_biomarkers_0903024 <-PCA_reg_all_biomarkers_0903024 %>%  mutate(UCL = as.double(str_trim(UCL, side ="left")))
+pc_forest_plot<- ggplot(PCA_reg_all_biomarkers_0903024 %>%  filter(`pca  type` == "Placenta"),
+                        aes(x = as.double(beta), xmin = as.double(LCL), xmax = as.double(UCL),
+                            y = PC, color = MODEL)) +
+  geom_vline(xintercept = 0, linetype = "longdash", position=position_dodge(width = 0.5)) +
+  geom_errorbarh(height = 0.2, lwd=1.05, position=position_dodge(width = 0.5)) +
+  geom_point(size = 2, shape = "circle", stroke = 0.5, position=position_dodge(width = 0.5)) +
+  # xlim(c(-2, 2))+
+  # geom_text(aes(y=as.double(Beta), label=as.double(Beta)), 
+  #           position = position_dodge2(width=4), vjust = -10) +
+  #  Un-comment the above line to check the effect estimates. The colors and effect estimates should match up with the tab_model() estimates from above.
+  xlab("Effect Estimate (95% CI)") +
+  ylab(" ") + 
+  labs(color = "Matrix")+
+  ggthemes::scale_color_tableau() +
+  facet_wrap(~Predictors, scales = "free") + #strip.position="left", nrow=72, scales = "free_y")+
+  ggtitle("Adjusted effect of stress on PCs from PCA of all cytokines measured in maternal sera, cord blood and placenta in WOC") + 
+  theme_bw() +theme(panel.border = element_blank(), legend.position="top", 
+                    axis.title.x = element_text(size=11, face="bold", colour = "black"), 
+                    axis.text.x = element_text(size=11),
+                    axis.text.y = element_text(size=11, face="bold", colour = "black")) #  For bold axis, include the following in theme(): axis.title.x = element_text(size=9, face="bold", colour = "black"), axis.text.y = element_text(size=9, face="bold", colour = "black")
+
+
+pc_forest_plot
+
+
+########## unadjusted PCA plot
+m1<-  lm(`PC1` ~ job.strain , 
+         data = cytokine_stress_covars_pca)
+m2<- lm(`PC2` ~ job.strain , 
+        data = cytokine_stress_covars_pca)
+m3<- lm(`PC3` ~ job.strain , 
+        data = cytokine_stress_covars_pca)
+m4<-lm(`PC4` ~   job.strain , 
+       data = cytokine_stress_covars_pca)
+m5<- lm(`PC5` ~   job.strain , 
+        data = cytokine_stress_covars_pca)
+
+
+m6<-  lm(`PC1` ~ pss.4.cat , 
+         data = cytokine_stress_covars_pca)
+m7<- lm(`PC2` ~ pss.4.cat , 
+        data = cytokine_stress_covars_pca)
+m8<- lm(`PC3` ~ pss.4.cat , 
+        data = cytokine_stress_covars_pca)
+m9<-lm(`PC4` ~   pss.4.cat , 
+       data = cytokine_stress_covars_pca)
+m10<- lm(`PC5` ~   pss.4.cat , 
+         data = cytokine_stress_covars_pca)
+
+
+m11<-  lm(`PC1` ~ sle.cat , 
+          data = cytokine_stress_covars_pca)
+m12<- lm(`PC2` ~ sle.cat , 
+         data = cytokine_stress_covars_pca)
+m13<- lm(`PC3` ~ sle.cat , 
+         data = cytokine_stress_covars_pca)
+m14<-lm(`PC4` ~   sle.cat , 
+        data = cytokine_stress_covars_pca)
+m15<- lm(`PC5` ~   sle.cat , 
+         data = cytokine_stress_covars_pca)
+
+
+m16<-  lm(`PC1` ~ social.support.cat , 
+          data = cytokine_stress_covars_pca)
+m17<- lm(`PC2` ~ social.support.cat , 
+         data = cytokine_stress_covars_pca)
+m18<- lm(`PC3` ~ social.support.cat , 
+         data = cytokine_stress_covars_pca)
+m19<-lm(`PC4` ~   social.support.cat , 
+        data = cytokine_stress_covars_pca)
+m20<- lm(`PC5` ~   social.support.cat , 
+         data = cytokine_stress_covars_pca)
+
+#paste0("m", 1:20, collapse = ",")
+
+tab_model(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18,m19,m20, 
+          collapse.ci = T, show.p=F )
+
+
+tab_model(m1,m2,m3, m4, 
+          m6,m7,m8, m9, 
+          m11,m12,m13, m14, 
+          m16,m17,m18, m19, 
+          collapse.ci = T, show.p=F )
+
+
+
+#### placental cytokine only together ####
+pca_res <- prcomp(lod_well_sme%>% column_to_rownames(var= "ppt_id") %>%  select(ends_with("_p")) , 
+                  scale. = TRUE) 
+
+# summarize pCA using a scree plot 
+var_explain <- data.frame(var_exp = (pca_res$sdev)^2) / sum((pca_res$sdev^2)) 
+var_explain <- rownames_to_column(var_explain) 
+var_explain$PC <- paste("PC", var_explain$rowname, sep=" ") 
+var_explain$PC <- factor(var_explain$PC,   levels = c("PC 1", "PC 2", "PC 3", "PC 4", "PC 5", "PC 6", "PC 7", "PC 8", "PC 9", "PC 10"))  
+
+ggplot(var_explain[1:10,], aes(x = as.factor(PC), y = var_exp, group = 1)) +  
+  geom_point(size = 4)+ geom_line() + 
+  theme_bw() +
+  labs(title = "Scree Plot: PCA on scaled data for \n cord cytokines (imputed)", 
+       x = "PC",
+       y = "Percent of Variance Explained by PC") 
+
+# loading scores
+loading_scores <- pca_res$rotation[,1] # get loading score for PC1
+scores <- loading_scores %>%  abs() %>%  sort(decreasing = T)  # which IDs push the cytoines to the neg. side, and which IDs push the cytokines to the pos side, then order them 
+names(scores)[1:10] # get top 10 IDs with the largest loading score
+
+# by matrix
+loading_scores <- as.data.frame(pca_res[["rotation"]]) %>%  rownames_to_column(var="cytokine") %>%  mutate(Matrix = case_when(str_detect(cytokine, "_m") == TRUE ~ "Maternal blood",
+                                                                                                                              str_detect(cytokine, "_c") == TRUE ~ "Cord blood",
+                                                                                                                              str_detect(cytokine, "_p") == TRUE ~ "Placental tissue",
+                                                                                                                              TRUE ~ "who are u"), 
+                                                                                                           Cytokines_type = str_remove(cytokine, "ln|(_m)|(_c)|(_p)"), 
+                                                                                                           Cytokines_type = str_remove(Cytokines_type, "_m|_c|_p"), 
+                                                                                                           Cytokines_type2 = case_when(str_detect(cytokine, "CCL") == TRUE ~ "CCLs",
+                                                                                                                                       str_detect(cytokine, "IFN") == TRUE ~ "IFNs",
+                                                                                                                                       str_detect(cytokine, "IL") == TRUE ~ "ILs",
+                                                                                                                                       str_detect(cytokine, "TNF") == TRUE ~ "TNFs",
+                                                                                                                                       str_detect(cytokine, "CXCL") == TRUE ~ "CXCLs",
+                                                                                                                                       TRUE ~ "who are u"), 
+                                                                                                           cytokine_matrix = paste0(Matrix, Cytokines_type2))
+
+### heatmap 
+library(heatmaply)
+# show all cytokines, for all PC that explan 70% of variation 
+heatmap_pca<- as.matrix(loading_scores %>%  select(cytokine, PC1, PC2, PC3, PC4) %>%  mutate(cytokine = str_replace(cytokine, "Alpha", "a"), 
+                                                          cytokine = str_replace(cytokine, "Gamma", "y"), 
+                                                          cytokine = str_replace(cytokine, "Beta", "b")) %>%  column_to_rownames(var = "cytokine"))
+
+pheatmap::pheatmap(heatmap_pca, border_color = "white",
+                   cluster_cols = F, 
+                   fontsize = 10, 
+                   color=colorRampPalette(c("navy", "white", "red"))(50))
+
+### Models with PC1 
+# join PC loading factors with data 
+pc1_loadings <- as.data.frame(pca_res[["x"]]) %>% rownames_to_column(var = "ppt_id")
+pc1_loadings$ppt_id <- as.double(pc1_loadings$ppt_id)
+
+cytokine_stress_covars_pca <- left_join(cytokine_stress_covars, pc1_loadings, by = "ppt_id")
+
+########## Adjusted PCA plot 
+# NOTE: Repeat this code manually after each PCA u do; sorry
+m1<-  lm(`PC1` ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+                        data = cytokine_stress_covars_pca)
+m2<- lm(`PC2` ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+                        data = cytokine_stress_covars_pca)
+m3<- lm(`PC3` ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+              data = cytokine_stress_covars_pca)
+m4<-lm(`PC4` ~   job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+              data = cytokine_stress_covars_pca)
+m5<- lm(`PC5` ~   job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+               data = cytokine_stress_covars_pca)
+
+
+m6<-  lm(`PC1` ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m7<- lm(`PC2` ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m8<- lm(`PC3` ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m9<-lm(`PC4` ~   pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+       data = cytokine_stress_covars_pca)
+m10<- lm(`PC5` ~   pss.4.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+
+
+m11<-  lm(`PC1` ~ sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m12<- lm(`PC2` ~ sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m13<- lm(`PC3` ~ sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m14<-lm(`PC4` ~   sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+       data = cytokine_stress_covars_pca)
+m15<- lm(`PC5` ~   sle.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+
+
+m16<-  lm(`PC1` ~ social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+          data = cytokine_stress_covars_pca)
+m17<- lm(`PC2` ~ social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m18<- lm(`PC3` ~ social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+m19<-lm(`PC4` ~   social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+        data = cytokine_stress_covars_pca)
+m20<- lm(`PC5` ~   social.support.cat + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure, 
+         data = cytokine_stress_covars_pca)
+
+#paste0("m", 1:20, collapse = ",")
+
+tab_model(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18,m19,m20, 
+          collapse.ci = T, show.p=F )
+
+
+tab_model(m1,m2,m3, m4, 
+          m6,m7,m8, m9, 
+          m11,m12,m13, m14, 
+          m16,m17,m18, m19, 
+          collapse.ci = T, show.p=F )
+
+
+## forest plot 
+load("PCA_reg_all_biomarkers_0903024.xlsx") # load output from above models 
+
+#  Creating forest plots ( aka horizontal error bar plots) with `ggplot2`
+PCA_reg_all_biomarkers_0903024 <-PCA_reg_all_biomarkers_0903024 %>%  mutate(UCL = as.double(str_trim(UCL, side ="left")))
+pc_forest_plot<- ggplot(PCA_reg_all_biomarkers_0903024 %>%  filter(`pca  type` == "Placenta"),
+                        aes(x = as.double(beta), xmin = as.double(LCL), xmax = as.double(UCL),
+                            y = PC, color = MODEL)) +
+  geom_vline(xintercept = 0, linetype = "longdash", position=position_dodge(width = 0.5)) +
+  geom_errorbarh(height = 0.2, lwd=1.05, position=position_dodge(width = 0.5)) +
+  geom_point(size = 2, shape = "circle", stroke = 0.5, position=position_dodge(width = 0.5)) +
+  # xlim(c(-2, 2))+
+  # geom_text(aes(y=as.double(Beta), label=as.double(Beta)), 
+  #           position = position_dodge2(width=4), vjust = -10) +
+  #  Un-comment the above line to check the effect estimates. The colors and effect estimates should match up with the tab_model() estimates from above.
+  xlab("Effect Estimate (95% CI)") +
+  ylab(" ") + 
+  labs(color = "Matrix")+
+  ggthemes::scale_color_tableau() +
+  facet_wrap(~Predictors, scales = "free") + #strip.position="left", nrow=72, scales = "free_y")+
+  ggtitle("Adjusted effect of stress on PCs from PCA of all cytokines measured in maternal sera, cord blood and placenta in WOC") + 
+  theme_bw() +theme(panel.border = element_blank(), legend.position="top", 
+                    axis.title.x = element_text(size=11, face="bold", colour = "black"), 
+                    axis.text.x = element_text(size=11),
+                    axis.text.y = element_text(size=11, face="bold", colour = "black")) #  For bold axis, include the following in theme(): axis.title.x = element_text(size=9, face="bold", colour = "black"), axis.text.y = element_text(size=9, face="bold", colour = "black")
+
+
+pc_forest_plot
+
+
+########## unadjusted PCA plot
+m1<-  lm(`PC1` ~ job.strain , 
+         data = cytokine_stress_covars_pca)
+m2<- lm(`PC2` ~ job.strain , 
+        data = cytokine_stress_covars_pca)
+m3<- lm(`PC3` ~ job.strain , 
+        data = cytokine_stress_covars_pca)
+m4<-lm(`PC4` ~   job.strain , 
+       data = cytokine_stress_covars_pca)
+m5<- lm(`PC5` ~   job.strain , 
+        data = cytokine_stress_covars_pca)
+
+
+m6<-  lm(`PC1` ~ pss.4.cat , 
+         data = cytokine_stress_covars_pca)
+m7<- lm(`PC2` ~ pss.4.cat , 
+        data = cytokine_stress_covars_pca)
+m8<- lm(`PC3` ~ pss.4.cat , 
+        data = cytokine_stress_covars_pca)
+m9<-lm(`PC4` ~   pss.4.cat , 
+       data = cytokine_stress_covars_pca)
+m10<- lm(`PC5` ~   pss.4.cat , 
+         data = cytokine_stress_covars_pca)
+
+
+m11<-  lm(`PC1` ~ sle.cat , 
+          data = cytokine_stress_covars_pca)
+m12<- lm(`PC2` ~ sle.cat , 
+         data = cytokine_stress_covars_pca)
+m13<- lm(`PC3` ~ sle.cat , 
+         data = cytokine_stress_covars_pca)
+m14<-lm(`PC4` ~   sle.cat , 
+        data = cytokine_stress_covars_pca)
+m15<- lm(`PC5` ~   sle.cat , 
+         data = cytokine_stress_covars_pca)
+
+
+m16<-  lm(`PC1` ~ social.support.cat , 
+          data = cytokine_stress_covars_pca)
+m17<- lm(`PC2` ~ social.support.cat , 
+         data = cytokine_stress_covars_pca)
+m18<- lm(`PC3` ~ social.support.cat , 
+         data = cytokine_stress_covars_pca)
+m19<-lm(`PC4` ~   social.support.cat , 
+        data = cytokine_stress_covars_pca)
+m20<- lm(`PC5` ~   social.support.cat , 
+         data = cytokine_stress_covars_pca)
+
+#paste0("m", 1:20, collapse = ",")
+
+tab_model(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18,m19,m20, 
+          collapse.ci = T, show.p=F )
+
+
+tab_model(m1,m2,m3, m4, 
+          m6,m7,m8, m9, 
+          m11,m12,m13, m14, 
+          m16,m17,m18, m19, 
+          collapse.ci = T, show.p=F )
+
+
+```
+
+
+## 6 Senstivity Analysis 
+
+**Table S5.** Sensitivity analysis with additional adjustment for maternal race and ethnicity in the adjusted linear associations between maternal psychosocial stressors and natural log transformed inflammatory biomarker levels (pg/mL) in maternal blood, cord blood, and placenta during mid-gestation among pregnant women undergoing elective second trimester pregnancy terminations in San Francisco, California (2010-2016).
+
+```{r sens_race}
+###### Race and Ethnicity #####
+cytokine_stress_covars <- cytokine_stress_covars %>%  mutate(  mat_race_eth= case_when(mat_race_eth == "White" ~ "White", 
+                                                                                      mat_race_eth == "Black" ~ "Black",
+                                                                                      mat_race_eth == "Asian/PI" ~ "Other", # "Asian/ Pacific Islander",
+                                                                                      mat_race_eth == "Latina" ~ "Latina",
+                                                                                      mat_race_eth == "Other" ~ "Other", # "Multi-racial"
+                                                                                       TRUE ~ NA))
+
+# Fully adjusted? Consider maternal age, educational attainment, smoking status, parity, and employment status as covariates 
+# run individual 
+job.strain.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure + bmi.procedure + mat_race_eth, 
+                                                                       list(i = as.name(x))), data = cytokine_stress_covars)})
+
+pss.4.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ pss.4 + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure + mat_race_eth, 
+                                                                  list(i = as.name(x))), data = cytokine_stress_covars)})
+pss.4.cat.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure+ mat_race_eth, 
+                                                                      list(i = as.name(x))), data = cytokine_stress_covars)})
+
+social.support.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ social.support + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure+ mat_race_eth, 
+                                                                           list(i = as.name(x))), data = cytokine_stress_covars)})
+social.support.cat.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ social.support.cat + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure+ mat_race_eth, 
+                                                                               list(i = as.name(x))), data = cytokine_stress_covars)})
+
+sle.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ sle + mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure+ mat_race_eth, 
+                                                                list(i = as.name(x))), data = cytokine_stress_covars)})
+sle.cat.list.mlr <- lapply(cytokine_list, function(x){lm(substitute(i ~ sle.cat+ mat_age+ smoke+ parity + mat_educ + gest.age.procedure + bmi.procedure+ mat_race_eth, 
+                                                                    list(i = as.name(x))), data = cytokine_stress_covars)})
+# merge all individual mlr
+adj_list = c(job.strain.list.mlr, 
+             pss.4.list.mlr, pss.4.cat.list.mlr, 
+             social.support.list.mlr, social.support.cat.list.mlr, 
+             sle.list.mlr, sle.cat.list.mlr) # should have 60 models: 6 PFAS metabolites, 10 outcomes - 5 bsids @ 2 time points 
+
+# extract coefficients/effect estimates and the formula. 
+beta_mlr <- plyr::ldply(adj_list, coef)
+formula <- lapply(adj_list, formula)
+# extractign 95% ci
+lcl.ucl <- plyr::ldply(adj_list, confint) 
+lcl.ucl$predictor<- rep(c("intercept","stress", "mat_age", "smoke", "parity", "mat_edu", "mat_edu","gest_age", "bmi", "mat_race", "mat_race", "mat_race"), 427 )
+
+lcl.ucl <- lcl.ucl %>%  filter(predictor == "stress") # filter all 95% CI specific to stress
+lcl.ucl$predictor <- rep(c("Job Strain", 
+                           "PSS 4", "PSS 4 cat", 
+                           "Social Support", "Social Support cat", 
+                           "Stressful Life Events", "Stressful Life Events cat"), each = 61) # Update predictor column with specific stress name, check `formula` dataframe from above to check the order
+lcl.ucl$outcome <- rep(cytokine_list,  7) # add a outcome column with specific cytokine, check `formula` above to check the order
+lcl.ucl<- lcl.ucl %>%  mutate(outcome_Matrix = case_when(str_detect(outcome, "_m") == TRUE~ "Maternal Sera", 
+                                                         str_detect(outcome, "_c") == TRUE~"Cord Blood", 
+                                                         str_detect(outcome, "_p") == TRUE~ "Placenta"), 
+                              outcom_clean = str_remove(outcome, pattern = "\\_[^.]*$")) # add a outcome column with specific matrix in which outcome was evaluated, check `formula` above to check the order
+
+#Combine effect estimates and 95% CI
+mlr.forest <- cbind.data.frame(beta_mlr$job.strain1, lcl.ucl)
+
+colnames(mlr.forest)<-c("Beta", "LCL", "UCL", "stress", "cytokine_outcome", "outcome_Matrix" , "outcome_clean")
+mlr.forest.edu <- mlr.forest
+
+#change class
+mlr.forest$Beta <- as.numeric(mlr.forest$Beta)
+mlr.forest$LCL <- as.numeric(mlr.forest$LCL)
+mlr.forest$UCL <- as.numeric(mlr.forest$UCL)
+
+sens.forest.race<- mlr.forest
+
+sens.forest.race.cat <- sens.forest.race %>%  filter(stress == "Job Strain" | 
+                                                       stress == "Stressful Life Events cat" | 
+                                                       stress == "Social Support cat" | 
+                                                       stress == "PSS 4 cat")
+sens.forest.race.cat$stress <- sens.forest.race.cat$stress %>%  str_remove_all(" cat")
+
+sens.forest.race.cat <-sens.forest.race.cat %>% filter(cytokine_outcome %in% identify_cytokines_lod_imputed | 
+                                                         cytokine_outcome == "lnCRH_m") 
+
+### compare the models 
+# interpret and compare
+compare_mlr_mlr_with_race <- cbind.data.frame(sens.forest.race, mlr.forest)
+colnames(compare_mlr_mlr_with_race) <- c("Beta_sens", "LCL_sens", "UCL_sens",  "stress_sens", "cytokine_outcome_sens", 
+                                        "outcome_Matrix_sens", "outcome_clean_sens", 
+                                        "Beta_mlr", "LCL_mlr", "UCL_mlr",  "stress_mlr", "cytokine_outcome_mlr", 
+                                        "outcome_Matrix_mlr", "outcome_clean_mlr")
+
+compare_mlr_mlr_with_race <- compare_mlr_mlr_with_race %>% mutate(beta_change = Beta_mlr - Beta_sens, 
+                                                                lcl_change = LCL_mlr - LCL_sens, 
+                                                                ucl_change = UCL_mlr - UCL_sens)
+compare_mlr_mlr_with_race <- compare_mlr_mlr_with_race %>%  filter(cytokine_outcome_sens %in% identify_cytokines_lod_imputed)
+
+# any beta change > some value
+View(compare_mlr_mlr_with_race %>%  filter(abs(beta_change) > 1)) # none
+View(compare_mlr_mlr_with_race %>%  filter(abs(lcl_change) > 1))  # none
+View(compare_mlr_mlr_with_race %>%  filter(abs(ucl_change) > 1))  # none
+# take -away: adding race doesnt make a difference in the estimates. 
+```
+
+**Table S6.** Sensitivity analysis for removing maternal body mass index from the adjusted linear associations between maternal psychosocial stressors and natural log transformed inflammatory biomarker levels (pg/mL) in maternal blood, cord blood, and placenta during mid-gestation among pregnant women undergoing elective second trimester pregnancy terminations in San Francisco, California (2010-2016).
+
+```{r sens_bmi}
+##### senslr #####
+# Fully adjusted considering maternal age, smoking status, parity, maternal education, gestational age, but NOT body mass index at time of procedure.  
+
+job.strain.list.senslr <- lapply(cytokine_list, function(x){lm(substitute(i ~ job.strain + mat_age+ smoke+ parity + mat_educ+ gest.age.procedure , 
+                                                                       list(i = as.name(x))), data = cytokine_stress_covars)})
+
+pss.4.list.senslr <- lapply(cytokine_list, function(x){lm(substitute(i ~ pss.4 + mat_age+ smoke+ parity + mat_educ + gest.age.procedure, 
+                                                                  list(i = as.name(x))), data = cytokine_stress_covars)})
+pss.4.cat.list.senslr <- lapply(cytokine_list, function(x){lm(substitute(i ~ pss.4.cat + mat_age+ smoke+ parity + mat_educ + gest.age.procedure, 
+                                                                      list(i = as.name(x))), data = cytokine_stress_covars)})
+
+social.support.list.senslr <- lapply(cytokine_list, function(x){lm(substitute(i ~ social.support + mat_age+ smoke+ parity + mat_educ + gest.age.procedure , 
+                                                                           list(i = as.name(x))), data = cytokine_stress_covars)})
+social.support.cat.list.senslr <- lapply(cytokine_list, function(x){lm(substitute(i ~ social.support.cat + mat_age+ smoke+ parity + mat_educ + gest.age.procedure, 
+                                                                               list(i = as.name(x))), data = cytokine_stress_covars)})
+sle.list.senslr <- lapply(cytokine_list, function(x){lm(substitute(i ~ sle + mat_age+ smoke+ parity + mat_educ + gest.age.procedure, 
+                                                                list(i = as.name(x))), data = cytokine_stress_covars)})
+sle.cat.list.senslr <- lapply(cytokine_list, function(x){lm(substitute(i ~ sle.cat+ mat_age+ smoke+ parity + mat_educ + gest.age.procedure, 
+                                                                    list(i = as.name(x))), data = cytokine_stress_covars)})
+# merge all individual senslr
+adj_list = c(job.strain.list.senslr, 
+             pss.4.list.senslr, pss.4.cat.list.senslr, 
+             social.support.list.senslr, social.support.cat.list.senslr, 
+             sle.list.senslr, sle.cat.list.senslr) # should have 60 models: 6 PFAS metabolites, 10 outcomes - 5 bsids @ 2 time points 
+
+# extract coefficients/effect estimates and the formula. 
+beta_senslr <- plyr::ldply(adj_list, coef)
+formula <- lapply(adj_list, formula)
+# extractign 95% ci
+lcl.ucl <- plyr::ldply(adj_list, confint) 
+lcl.ucl$predictor<- rep(c("intercept","stress", "mat_age", "smoke", "parity", "mat_edu", "mat_edu","gest_age", "bmi"), 427 )
+
+lcl.ucl <- lcl.ucl %>%  filter(predictor == "stress") # filter all 95% CI specific to stress
+lcl.ucl$predictor <- rep(c("Job Strain", 
+                           "PSS 4", "PSS 4 cat", 
+                           "Social Support", "Social Support cat", 
+                           "Stressful Life Events", "Stressful Life Events cat"), each = 61) # Update predictor column with specific stress name, check `formula` dataframe from above to check the order
+lcl.ucl$outcome <- rep(cytokine_list,  7) # add a outcome column with specific cytokine, check `formula` above to check the order
+lcl.ucl<- lcl.ucl %>%  mutate(outcome_Matrix = case_when(str_detect(outcome, "_m") == TRUE~ "Maternal Sera", 
+                                                         str_detect(outcome, "_c") == TRUE~"Cord Blood", 
+                                                         str_detect(outcome, "_p") == TRUE~ "Placenta"), 
+                              outcom_clean = str_remove(outcome, pattern = "\\_[^.]*$")) # add a outcome column with specific matrix in which outcome was evaluated, check `formula` above to check the order
+
+#Combine effect estimates and 95% CI
+senslr.forest <- cbind.data.frame(beta_senslr$job.strain1, lcl.ucl)
+
+colnames(senslr.forest)<-c("Beta", "LCL", "UCL", "stress", "cytokine_outcome", "outcome_Matrix" , "outcome_clean")
+senslr.forest.edu <- senslr.forest
+
+#change class
+senslr.forest$Beta <- as.numeric(senslr.forest$Beta)
+senslr.forest$LCL <- as.numeric(senslr.forest$LCL)
+senslr.forest$UCL <- as.numeric(senslr.forest$UCL)
+```
